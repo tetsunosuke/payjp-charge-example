@@ -6,26 +6,10 @@ require 'time'
 require "csv"
 require 'aws-sdk-s3' 
 
-def object_uploaded?(s3_client, bucket_name, object_key)
-  response = s3_client.put_object(
-    bucket: bucket_name,
-    key: object_key
-  )
-  if response.etag
-    return true
-  else
-    return false
-  end
-rescue StandardError => e
-  puts "Error uploading object: #{e.message}"
-  return false
-end
-
-
 # APIキーでAPIを呼び出す
 def call_charges(params)
   # 実際にはenvから読むのを推奨
-  api_key = 'sk_test_xxxxxxxxxxxxx'
+  api_key = ENV["payjp_private_key"]
   payjp_api = 'https://api.pay.jp/v1/charges'
   uri = URI.parse(payjp_api)
   uri.query = URI.encode_www_form(params)
@@ -64,8 +48,7 @@ def lambda_handler(event:, context:)
   key = Date.today.strftime("%Y%m%d") + ".csv"
   csv_path = "/tmp/" + key 
   csv = CSV.open(csv_path, "wb")
-  csv.puts ["created","customer"]
-
+  csv.puts ["作成日", "定期課金ID", "顧客ID",'決済ステータス(成功or失敗)', "金額"]
 
   total = 0
   # 次のページがあるだけ繰り返す
@@ -74,8 +57,13 @@ def lambda_handler(event:, context:)
     total = total + result["count"].to_i
     result["data"].each do |data|
       # CSVファイルに書き込む内容を生成する
-      p data["created"], Time.at(data["created"]).strftime("%Y/%m/%d"), data["customer"]
-      csv.puts [data["created"] ,  data["customer"]]
+      csv.puts [
+        Time.at(data["created"]).strftime("%Y/%m/%d %H:%M:%S"),
+        data["subscription"],
+        data["customer"],
+        data["paid"],
+        data["amount"]
+      ]
     end
     # offsetを変更してリクエストする
     params.store("offset", total)
@@ -90,10 +78,10 @@ def lambda_handler(event:, context:)
 
   # S3に書き込む
   bucket_name = 'payjp-data'
-  object_key = csv_path
+  object_key = key
   region = 'ap-northeast-1'
-  s3_client = Aws::S3::Client.new(region: region)
-  object_uploaded?(s3_client, bucket_name, object_key)
+  s3 = Aws::S3::Object.new(bucket_name, key, region: region)
+  s3.upload_file(csv_path)
 
 
   { statusCode: 200, body: JSON.generate(total) }
